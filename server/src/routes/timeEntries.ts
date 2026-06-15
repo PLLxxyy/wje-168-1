@@ -37,38 +37,37 @@ const calculateWeeklyHours = (userId: number, startOfWeek: string, endOfWeek: st
 
 const OVERTIME_PREFIX = '[加班] ';
 
-const mergePreviousSplits = (userId: number, startOfWeek: string, endOfWeek: string) => {
-  const splitEntries = db.prepare(`
+const mergePendingSplits = (userId: number, startOfWeek: string, endOfWeek: string) => {
+  const pendingSplits = db.prepare(`
     SELECT id, user_id, entry_date, task_name, hours, project_id, description, status
     FROM time_entries
     WHERE user_id = ?
       AND entry_date >= ?
       AND entry_date <= ?
       AND task_name LIKE ?
+      AND status IN ('pending', 'rejected')
   `).all(userId, startOfWeek, endOfWeek, OVERTIME_PREFIX + '%') as {
     id: number; user_id: number; entry_date: string; task_name: string;
     hours: number; project_id: number | null; description: string | null; status: string;
   }[];
 
-  for (const split of splitEntries) {
+  for (const split of pendingSplits) {
     const originalTaskName = split.task_name.slice(OVERTIME_PREFIX.length);
     const original = db.prepare(`
       SELECT id, hours FROM time_entries
-      WHERE user_id = ? AND entry_date = ? AND task_name = ? AND id != ? AND status != 'rejected'
+      WHERE user_id = ? AND entry_date = ? AND task_name = ? AND id != ? AND status IN ('pending', 'rejected')
       LIMIT 1
     `).get(split.user_id, split.entry_date, originalTaskName, split.id) as { id: number; hours: number } | undefined;
 
     if (original) {
       db.prepare('UPDATE time_entries SET hours = hours + ? WHERE id = ?').run(split.hours, original.id);
-      db.prepare('DELETE FROM time_entries WHERE id = ?').run(split.id);
-    } else {
-      db.prepare('DELETE FROM time_entries WHERE id = ?').run(split.id);
     }
+    db.prepare('DELETE FROM time_entries WHERE id = ?').run(split.id);
   }
 };
 
 const updateOvertimeStatusForWeek = (userId: number, startOfWeek: string, endOfWeek: string) => {
-  mergePreviousSplits(userId, startOfWeek, endOfWeek);
+  mergePendingSplits(userId, startOfWeek, endOfWeek);
 
   const entries = db.prepare(`
     SELECT id, user_id, entry_date, task_name, hours, project_id, description, status, is_overtime
@@ -88,6 +87,7 @@ const updateOvertimeStatusForWeek = (userId: number, startOfWeek: string, endOfW
   let cumulativeHours = 0;
   let overtimeStartDate: string | null = null;
   let thresholdCrossed = false;
+  let hasNewOvertime = false;
 
   const insertStmt = db.prepare(`
     INSERT INTO time_entries (user_id, entry_date, task_name, hours, project_id, description, is_overtime, status)
@@ -95,16 +95,27 @@ const updateOvertimeStatusForWeek = (userId: number, startOfWeek: string, endOfW
   `);
 
   for (const entry of entries) {
-    if (thresholdCrossed) {
-      if (entry.is_overtime === 0) {
-        db.prepare('UPDATE time_entries SET is_overtime = 1 WHERE id = ?').run(entry.id);
+    const isApproved = entry.status === 'approved';
+    const beforeThisEntry = cumulativeHours;
+    cumulativeHours += entry.hours;
+
+    if (isApproved) {
+      if (beforeThisEntry < WEEKLY_STANDARD_HOURS && cumulativeHours > WEEKLY_STANDARD_HOURS) {
+        overtimeStartDate = entry.entry_date;
+        thresholdCrossed = true;
+      } else if (cumulativeHours > WEEKLY_STANDARD_HOURS) {
+        thresholdCrossed = true;
       }
-      cumulativeHours += entry.hours;
       continue;
     }
 
-    const beforeThisEntry = cumulativeHours;
-    cumulativeHours += entry.hours;
+    if (thresholdCrossed) {
+      if (entry.is_overtime !== 1) {
+        db.prepare('UPDATE time_entries SET is_overtime = 1 WHERE id = ?').run(entry.id);
+        hasNewOvertime = true;
+      }
+      continue;
+    }
 
     if (cumulativeHours > WEEKLY_STANDARD_HOURS) {
       const overtimeHours = cumulativeHours - WEEKLY_STANDARD_HOURS;
@@ -112,6 +123,7 @@ const updateOvertimeStatusForWeek = (userId: number, startOfWeek: string, endOfW
 
       thresholdCrossed = true;
       overtimeStartDate = entry.entry_date;
+      hasNewOvertime = true;
 
       if (normalHours > 0) {
         db.prepare('UPDATE time_entries SET hours = ?, is_overtime = 0 WHERE id = ?').run(normalHours, entry.id);
@@ -133,7 +145,7 @@ const updateOvertimeStatusForWeek = (userId: number, startOfWeek: string, endOfW
     }
   }
 
-  return { overtimeStartDate, totalHours: cumulativeHours };
+  return { overtimeStartDate, totalHours: cumulativeHours, hasNewOvertime };
 };
 
 router.get('/', authenticateToken, (req, res) => {
@@ -243,27 +255,33 @@ router.post('/', authenticateToken, (req, res) => {
       insertedIds.push(result.lastInsertRowid as number);
     }
 
-    const { totalHours: weekTotalHours, overtimeStartDate } = updateOvertimeStatusForWeek(
+    const { totalHours: weekTotalHours, overtimeStartDate, hasNewOvertime } = updateOvertimeStatusForWeek(
       req.user!.userId,
       startOfWeek,
       endOfWeek
     );
 
     const user = db.prepare('SELECT supervisor_id, name FROM users WHERE id = ?').get(req.user!.userId) as { supervisor_id: number; name: string };
-    if (overtimeStartDate && user.supervisor_id) {
+    if (hasNewOvertime && user.supervisor_id) {
       const notificationStmt = db.prepare(`
         INSERT INTO notifications (user_id, type, title, content, related_id)
         VALUES (?, 'overtime_pending', ?, ?, ?)
       `);
+      const firstPendingOvertime = db.prepare(`
+        SELECT id FROM time_entries 
+        WHERE user_id = ? AND entry_date >= ? AND entry_date <= ? 
+          AND is_overtime = 1 AND status = 'pending'
+        ORDER BY entry_date ASC, id ASC LIMIT 1
+      `).get(req.user!.userId, startOfWeek, endOfWeek) as { id: number } | undefined;
       notificationStmt.run(
         user.supervisor_id,
         '加班申请待审批',
         `${user.name} ${startOfWeek} 至 ${endOfWeek} 的周工时已超过40小时，产生加班申请，请审批`,
-        insertedIds[0]
+        firstPendingOvertime?.id || insertedIds[0]
       );
     }
 
-    return { insertedIds, weekTotalHours, overtimeStartDate };
+    return { insertedIds, weekTotalHours, overtimeStartDate, hasNewOvertime };
   });
 
   try {
