@@ -194,7 +194,7 @@ router.get('/team/summary', authenticateToken, requireRole('supervisor', 'admin'
       COUNT(DISTINCT ud.entry_date) as work_days,
       COALESCE(SUM(ud.daily_approved_hours), 0) as approved_hours,
       COALESCE(SUM(ud.daily_pending_hours), 0) as pending_hours,
-      COALESCE(SUM(CASE WHEN ud.is_overtime = 1 AND ud.daily_approved_hours > 8 THEN ud.daily_approved_hours - 8 ELSE 0 END), 0) as overtime_hours
+      COALESCE(SUM(CASE WHEN ud.is_overtime = 1 THEN ud.daily_approved_hours ELSE 0 END), 0) as overtime_hours
     FROM users u
     LEFT JOIN user_daily ud ON u.id = ud.user_id
     WHERE u.role = 'employee'
@@ -266,7 +266,7 @@ router.get('/company/summary', authenticateToken, requireRole('admin'), (req, re
       COUNT(DISTINCT u.id) as employee_count,
       COUNT(DISTINCT ud.entry_date || '_' || ud.user_id) as total_attendance_days,
       COALESCE(SUM(ud.daily_approved_hours), 0) as total_hours,
-      COALESCE(SUM(CASE WHEN ud.is_overtime = 1 AND ud.daily_approved_hours > 8 THEN ud.daily_approved_hours - 8 ELSE 0 END), 0) as total_overtime_hours
+      COALESCE(SUM(CASE WHEN ud.is_overtime = 1 THEN ud.daily_approved_hours ELSE 0 END), 0) as total_overtime_hours
     FROM users u
     LEFT JOIN user_daily ud ON u.id = ud.user_id
     WHERE u.role = 'employee'
@@ -282,27 +282,24 @@ router.get('/company/overtime-ranking', authenticateToken, requireRole('admin'),
   const { year, month, limit } = req.query;
 
   const sql = `
-    WITH user_daily AS (
+    WITH overtime_entries AS (
       SELECT
         te.user_id,
-        te.entry_date,
-        SUM(CASE WHEN te.status = 'approved' THEN te.hours ELSE 0 END) as daily_approved_hours,
-        MAX(te.is_overtime) as is_overtime
+        SUM(CASE WHEN te.status = 'approved' AND te.is_overtime = 1 THEN te.hours ELSE 0 END) as overtime_hours
       FROM time_entries te
       WHERE strftime('%Y', te.entry_date) = ?
         AND strftime('%m', te.entry_date) = ?
-      GROUP BY te.user_id, te.entry_date
+      GROUP BY te.user_id
     )
     SELECT
       u.id,
       u.name,
       u.department,
-      COALESCE(SUM(CASE WHEN ud.is_overtime = 1 AND ud.daily_approved_hours > 8 THEN ud.daily_approved_hours - 8 ELSE 0 END), 0) as overtime_hours
+      COALESCE(oe.overtime_hours, 0) as overtime_hours
     FROM users u
-    LEFT JOIN user_daily ud ON u.id = ud.user_id
+    LEFT JOIN overtime_entries oe ON u.id = oe.user_id
     WHERE u.role = 'employee'
-    GROUP BY u.id, u.name, u.department
-    HAVING overtime_hours > 0
+      AND oe.overtime_hours > 0
     ORDER BY overtime_hours DESC
     LIMIT ?
   `;

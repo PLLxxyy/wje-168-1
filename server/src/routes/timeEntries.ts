@@ -35,30 +35,99 @@ const calculateWeeklyHours = (userId: number, startOfWeek: string, endOfWeek: st
   return result.total_hours;
 };
 
+const OVERTIME_PREFIX = '[加班] ';
+
+const mergePreviousSplits = (userId: number, startOfWeek: string, endOfWeek: string) => {
+  const splitEntries = db.prepare(`
+    SELECT id, user_id, entry_date, task_name, hours, project_id, description, status
+    FROM time_entries
+    WHERE user_id = ?
+      AND entry_date >= ?
+      AND entry_date <= ?
+      AND task_name LIKE ?
+  `).all(userId, startOfWeek, endOfWeek, OVERTIME_PREFIX + '%') as {
+    id: number; user_id: number; entry_date: string; task_name: string;
+    hours: number; project_id: number | null; description: string | null; status: string;
+  }[];
+
+  for (const split of splitEntries) {
+    const originalTaskName = split.task_name.slice(OVERTIME_PREFIX.length);
+    const original = db.prepare(`
+      SELECT id, hours FROM time_entries
+      WHERE user_id = ? AND entry_date = ? AND task_name = ? AND id != ? AND status != 'rejected'
+      LIMIT 1
+    `).get(split.user_id, split.entry_date, originalTaskName, split.id) as { id: number; hours: number } | undefined;
+
+    if (original) {
+      db.prepare('UPDATE time_entries SET hours = hours + ? WHERE id = ?').run(split.hours, original.id);
+      db.prepare('DELETE FROM time_entries WHERE id = ?').run(split.id);
+    } else {
+      db.prepare('DELETE FROM time_entries WHERE id = ?').run(split.id);
+    }
+  }
+};
+
 const updateOvertimeStatusForWeek = (userId: number, startOfWeek: string, endOfWeek: string) => {
+  mergePreviousSplits(userId, startOfWeek, endOfWeek);
+
   const entries = db.prepare(`
-    SELECT id, entry_date, hours, is_overtime
+    SELECT id, user_id, entry_date, task_name, hours, project_id, description, status, is_overtime
     FROM time_entries
     WHERE user_id = ?
       AND entry_date >= ?
       AND entry_date <= ?
       AND status != 'rejected'
     ORDER BY entry_date ASC, id ASC
-  `).all(userId, startOfWeek, endOfWeek) as { id: number; entry_date: string; hours: number; is_overtime: number }[];
+  `).all(userId, startOfWeek, endOfWeek) as {
+    id: number; user_id: number; entry_date: string; task_name: string;
+    hours: number; project_id: number | null; description: string | null;
+    status: string; is_overtime: number;
+  }[];
 
   const WEEKLY_STANDARD_HOURS = 40;
   let cumulativeHours = 0;
   let overtimeStartDate: string | null = null;
+  let thresholdCrossed = false;
+
+  const insertStmt = db.prepare(`
+    INSERT INTO time_entries (user_id, entry_date, task_name, hours, project_id, description, is_overtime, status)
+    VALUES (?, ?, ?, ?, ?, ?, 1, 'pending')
+  `);
 
   for (const entry of entries) {
-    if (overtimeStartDate) {
-      db.prepare('UPDATE time_entries SET is_overtime = 1 WHERE id = ?').run(entry.id);
-    } else {
-      cumulativeHours += entry.hours;
-      if (cumulativeHours > WEEKLY_STANDARD_HOURS) {
-        overtimeStartDate = entry.entry_date;
+    if (thresholdCrossed) {
+      if (entry.is_overtime === 0) {
         db.prepare('UPDATE time_entries SET is_overtime = 1 WHERE id = ?').run(entry.id);
+      }
+      cumulativeHours += entry.hours;
+      continue;
+    }
+
+    const beforeThisEntry = cumulativeHours;
+    cumulativeHours += entry.hours;
+
+    if (cumulativeHours > WEEKLY_STANDARD_HOURS) {
+      const overtimeHours = cumulativeHours - WEEKLY_STANDARD_HOURS;
+      const normalHours = entry.hours - overtimeHours;
+
+      thresholdCrossed = true;
+      overtimeStartDate = entry.entry_date;
+
+      if (normalHours > 0) {
+        db.prepare('UPDATE time_entries SET hours = ?, is_overtime = 0 WHERE id = ?').run(normalHours, entry.id);
+        insertStmt.run(
+          entry.user_id,
+          entry.entry_date,
+          OVERTIME_PREFIX + entry.task_name,
+          overtimeHours,
+          entry.project_id,
+          entry.description,
+        );
       } else {
+        db.prepare('UPDATE time_entries SET is_overtime = 1 WHERE id = ?').run(entry.id);
+      }
+    } else {
+      if (entry.is_overtime !== 0) {
         db.prepare('UPDATE time_entries SET is_overtime = 0 WHERE id = ?').run(entry.id);
       }
     }

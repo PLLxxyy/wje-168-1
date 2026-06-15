@@ -293,7 +293,7 @@ export default function ApprovalList() {
                           <Clock className="w-4 h-4 text-gray-400" />
                           <span className="font-medium">{daily.entry_date}</span>
                           <span className="text-sm text-gray-500">{daily.total_hours.toFixed(1)}h</span>
-                          {daily.is_overtime === 1 && <Tag color="orange" size="small">加班</Tag>}
+                          {daily.is_overtime === 1 && <Tag color="orange">加班</Tag>}
                         </div>
                         <div className="flex items-center gap-2">
                           <Button
