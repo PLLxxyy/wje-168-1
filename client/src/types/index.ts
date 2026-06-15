@@ -80,6 +80,47 @@ export interface CalendarData {
   status: string;
 }
 
+export interface WeeklySummary {
+  start_of_week: string;
+  end_of_week: string;
+  work_days: number;
+  total_hours: number;
+  approved_hours: number;
+  pending_hours: number;
+  rejected_hours: number;
+  overtime_hours: number;
+  weekly_standard_hours: number;
+  overtime_start_date: string | null;
+  daily_data: {
+    entry_date: string;
+    approved_hours: number;
+    pending_hours: number;
+    rejected_hours: number;
+    is_overtime: number;
+    entry_count: number;
+  }[];
+}
+
+export interface DailyApprovalGroup {
+  entry_date: string;
+  entries: TimeEntry[];
+  total_hours: number;
+  is_overtime: number;
+}
+
+export interface WeeklyApprovalGroup {
+  user_id: number;
+  user_name: string;
+  department: string;
+  week_start: string;
+  daily_groups: DailyApprovalGroup[];
+  total_hours: number;
+  normal_hours: number;
+  overtime_hours: number;
+  has_overtime: boolean;
+  total_entries: number;
+}
+
 export interface PersonalSummary {
   work_days: number;
   approved_hours: number;

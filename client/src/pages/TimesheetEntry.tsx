@@ -1,13 +1,13 @@
 import { useState, useEffect, useCallback } from 'react';
-import { Card, Button, Input, InputNumber, Select, Modal, Badge, Tag, message, Popconfirm } from 'antd';
-import { Plus, ChevronLeft, ChevronRight, Trash2, Edit3, Send, Clock, CheckCircle2, XCircle, AlertCircle } from 'lucide-react';
+import { Card, Button, Input, InputNumber, Select, Modal, Badge, Tag, message, Popconfirm, Progress, Tooltip } from 'antd';
+import { Plus, ChevronLeft, ChevronRight, Trash2, Edit3, Send, Clock, CheckCircle2, XCircle, AlertCircle, Zap } from 'lucide-react';
 import dayjs, { Dayjs } from 'dayjs';
 import { Calendar } from 'antd';
 import { getTimeEntries, getCalendarData, saveTimeEntries, updateTimeEntry, deleteTimeEntry } from '../api/timeEntries';
-import { getPersonalSummary } from '../api/stats';
+import { getPersonalSummary, getWeeklySummary } from '../api/stats';
 import { getProjects } from '../api/projects';
 import { useAuthStore } from '../store/authStore';
-import type { TimeEntry, CalendarData, PersonalSummary, Project } from '../types';
+import type { TimeEntry, CalendarData, PersonalSummary, Project, WeeklySummary } from '../types';
 
 const { TextArea } = Input;
 
@@ -26,6 +26,7 @@ export default function TimesheetEntry() {
   const [selectedDate, setSelectedDate] = useState<Dayjs>(dayjs());
   const [calendarData, setCalendarData] = useState<CalendarData[]>([]);
   const [summary, setSummary] = useState<PersonalSummary | null>(null);
+  const [weeklySummary, setWeeklySummary] = useState<WeeklySummary | null>(null);
   const [entries, setEntries] = useState<TimeEntry[]>([]);
   const [projects, setProjects] = useState<Project[]>([]);
   const [modalOpen, setModalOpen] = useState(false);
@@ -51,6 +52,15 @@ export default function TimesheetEntry() {
     }
   }, [currentMonth]);
 
+  const fetchWeeklySummary = useCallback(async () => {
+    try {
+      const data = await getWeeklySummary(selectedDate.format('YYYY-MM-DD'));
+      setWeeklySummary(data);
+    } catch {
+      message.error('加载周统计失败');
+    }
+  }, [selectedDate]);
+
   const fetchEntries = useCallback(async () => {
     try {
       const dateStr = selectedDate.format('YYYY-MM-DD');
@@ -69,6 +79,10 @@ export default function TimesheetEntry() {
     fetchCalendarData();
     fetchSummary();
   }, [fetchCalendarData, fetchSummary]);
+
+  useEffect(() => {
+    fetchWeeklySummary();
+  }, [fetchWeeklySummary]);
 
   useEffect(() => {
     fetchEntries();
@@ -156,6 +170,7 @@ export default function TimesheetEntry() {
       fetchEntries();
       fetchCalendarData();
       fetchSummary();
+      fetchWeeklySummary();
     } catch {
       message.error('保存失败');
     }
@@ -168,6 +183,7 @@ export default function TimesheetEntry() {
       fetchEntries();
       fetchCalendarData();
       fetchSummary();
+      fetchWeeklySummary();
     } catch {
       message.error('删除失败');
     }
@@ -198,6 +214,7 @@ export default function TimesheetEntry() {
       fetchEntries();
       fetchCalendarData();
       fetchSummary();
+      fetchWeeklySummary();
     } catch {
       message.error('提交失败');
     } finally {
@@ -224,6 +241,7 @@ export default function TimesheetEntry() {
       fetchEntries();
       fetchCalendarData();
       fetchSummary();
+      fetchWeeklySummary();
     } catch {
       message.error('提交失败');
     } finally {
@@ -252,6 +270,40 @@ export default function TimesheetEntry() {
         </div>
       </div>
 
+      <Card size="small" className="mb-4 shadow-sm">
+        <div className="flex items-center justify-between mb-2">
+          <div className="flex items-center gap-2">
+            <Zap className="w-4 h-4 text-orange-500" />
+            <span className="font-medium text-gray-700">本周工时进度</span>
+            <span className="text-xs text-gray-400">
+              ({weeklySummary?.start_of_week} ~ {weeklySummary?.end_of_week})
+            </span>
+          </div>
+          <div className="text-sm">
+            <span className="text-gray-600">总计：</span>
+            <span className={`font-bold ${weeklySummary && weeklySummary.total_hours > 40 ? 'text-red-600' : 'text-blue-600'}`}>
+              {weeklySummary?.total_hours?.toFixed(1) ?? '0.0'}h
+            </span>
+            <span className="text-gray-400"> / 40h</span>
+          </div>
+        </div>
+        <Progress
+          percent={Math.min(100, ((weeklySummary?.total_hours ?? 0) / 40) * 100)}
+          strokeColor={{
+            '0%': '#10b981',
+            '50%': '#f59e0b',
+            '100%': '#ef4444',
+          }}
+          showInfo={false}
+        />
+        <div className="flex justify-between mt-2 text-xs text-gray-500">
+          <span>正常工时：{Math.min(40, weeklySummary?.total_hours ?? 0).toFixed(1)}h</span>
+          <span className="text-red-500">
+            加班工时：{weeklySummary?.overtime_hours?.toFixed(1) ?? '0.0'}h
+          </span>
+        </div>
+      </Card>
+
       <div className="grid grid-cols-4 gap-4">
         <Card size="small" className="border-l-4 border-l-blue-500">
           <div className="text-sm text-gray-500">出勤天数</div>
@@ -267,7 +319,7 @@ export default function TimesheetEntry() {
         </Card>
         <Card size="small" className="border-l-4 border-l-red-500">
           <div className="text-sm text-gray-500">加班工时</div>
-          <div className="text-2xl font-bold text-red-600">{summary?.overtime_hours?.toFixed(1) ?? '0.0'}</div>
+          <div className="text-2xl font-bold text-red-600">{weeklySummary?.overtime_hours?.toFixed(1) ?? summary?.overtime_hours?.toFixed(1) ?? '0.0'}</div>
         </Card>
       </div>
 

@@ -1,7 +1,12 @@
 import api from './index';
 
-export const getPendingApprovals = async () => {
-  const res = await api.get('/approvals/pending');
+export const getPendingApprovals = async (type?: 'all' | 'normal' | 'overtime') => {
+  const res = await api.get('/approvals/pending', { params: { type } });
+  return res.data;
+};
+
+export const getPendingWeeklyApprovals = async (type?: 'all' | 'normal' | 'overtime') => {
+  const res = await api.get('/approvals/pending/weekly', { params: { type } });
   return res.data;
 };
 

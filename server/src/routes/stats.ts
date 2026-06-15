@@ -4,6 +4,98 @@ import { authenticateToken, requireRole } from '../middleware/auth';
 
 const router = Router();
 
+const getWeekRange = (dateStr: string): { startOfWeek: string; endOfWeek: string } => {
+  const date = new Date(dateStr);
+  const day = date.getDay();
+  const diff = date.getDate() - day + (day === 0 ? -6 : 1);
+  const monday = new Date(date);
+  monday.setDate(diff);
+  const sunday = new Date(monday);
+  sunday.setDate(monday.getDate() + 6);
+  const format = (d: Date) => d.toISOString().split('T')[0];
+  return { startOfWeek: format(monday), endOfWeek: format(sunday) };
+};
+
+router.get('/personal/weekly', authenticateToken, (req, res) => {
+  if (!req.user) return res.status(401).json({ error: '未认证' });
+
+  const { date } = req.query;
+  const userId = req.user.userId;
+  const targetDate = date ? String(date) : new Date().toISOString().split('T')[0];
+  const { startOfWeek, endOfWeek } = getWeekRange(targetDate);
+
+  const sql = `
+    SELECT
+      entry_date,
+      SUM(CASE WHEN status = 'approved' THEN hours ELSE 0 END) as approved_hours,
+      SUM(CASE WHEN status = 'pending' THEN hours ELSE 0 END) as pending_hours,
+      SUM(CASE WHEN status = 'rejected' THEN hours ELSE 0 END) as rejected_hours,
+      MAX(is_overtime) as is_overtime,
+      COUNT(*) as entry_count
+    FROM time_entries
+    WHERE user_id = ?
+      AND entry_date >= ?
+      AND entry_date <= ?
+    GROUP BY entry_date
+    ORDER BY entry_date
+  `;
+
+  const dailyData = db.prepare(sql).all(userId, startOfWeek, endOfWeek);
+
+  let totalApproved = 0;
+  let totalPending = 0;
+  let totalRejected = 0;
+  let totalOvertime = 0;
+  let workDays = 0;
+
+  const WEEKLY_STANDARD = 40;
+  let cumulativeApproved = 0;
+  let overtimeStartDate: string | null = null;
+
+  for (const day of dailyData as any[]) {
+    totalApproved += day.approved_hours;
+    totalPending += day.pending_hours;
+    totalRejected += day.rejected_hours;
+    if (day.entry_count > 0) workDays++;
+    
+    if (!overtimeStartDate && day.is_overtime === 1) {
+      overtimeStartDate = day.entry_date;
+    }
+  }
+
+  const allEntries = db.prepare(`
+    SELECT hours, status
+    FROM time_entries
+    WHERE user_id = ?
+      AND entry_date >= ?
+      AND entry_date <= ?
+    ORDER BY entry_date ASC, id ASC
+  `).all(userId, startOfWeek, endOfWeek) as { hours: number; status: string }[];
+
+  let cumulativeHours = 0;
+  for (const entry of allEntries) {
+    if (entry.status !== 'rejected') {
+      cumulativeHours += entry.hours;
+    }
+  }
+  
+  totalOvertime = Math.max(0, cumulativeHours - WEEKLY_STANDARD);
+
+  res.json({
+    start_of_week: startOfWeek,
+    end_of_week: endOfWeek,
+    work_days: workDays,
+    total_hours: totalApproved + totalPending,
+    approved_hours: totalApproved,
+    pending_hours: totalPending,
+    rejected_hours: totalRejected,
+    overtime_hours: totalOvertime,
+    weekly_standard_hours: WEEKLY_STANDARD,
+    overtime_start_date: overtimeStartDate,
+    daily_data: dailyData
+  });
+});
+
 router.get('/personal/summary', authenticateToken, (req, res) => {
   if (!req.user) return res.status(401).json({ error: '未认证' });
 
@@ -30,7 +122,7 @@ router.get('/personal/summary', authenticateToken, (req, res) => {
       SUM(daily_approved_hours) as approved_hours,
       SUM(daily_pending_hours) as pending_hours,
       SUM(daily_rejected_hours) as rejected_hours,
-      SUM(CASE WHEN is_overtime = 1 AND daily_approved_hours > 8 THEN daily_approved_hours - 8 ELSE 0 END) as overtime_hours,
+      SUM(CASE WHEN is_overtime = 1 THEN daily_approved_hours ELSE 0 END) as overtime_hours,
       SUM(daily_entries) as total_entries
     FROM daily_summary
   `;

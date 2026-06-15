@@ -14,12 +14,18 @@ const typeColors: Record<string, string> = {
   approval: 'green',
   rejection: 'red',
   system: 'blue',
+  overtime_approval: 'orange',
+  overtime_rejection: 'orange',
+  overtime_pending: 'orange',
 };
 
 const typeLabels: Record<string, string> = {
   approval: '审批通过',
   rejection: '审批打回',
   system: '系统通知',
+  overtime_approval: '加班通过',
+  overtime_rejection: '加班打回',
+  overtime_pending: '加班待审',
 };
 
 export default function Notifications() {

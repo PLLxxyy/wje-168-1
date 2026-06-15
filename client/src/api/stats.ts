@@ -1,5 +1,10 @@
 import api from './index';
 
+export const getWeeklySummary = async (date?: string) => {
+  const res = await api.get('/stats/personal/weekly', { params: { date } });
+  return res.data;
+};
+
 export const getPersonalSummary = async (year: number, month: number) => {
   const res = await api.get('/stats/personal/summary', { params: { year, month } });
   return res.data;
